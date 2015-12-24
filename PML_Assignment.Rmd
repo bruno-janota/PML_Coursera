@@ -1,0 +1,187 @@
+---
+title: "Coursera: Practical Machine Learning Final Project"
+author: "Bruno Janota"
+date: "December 20, 2015"
+output: html_document
+---
+
+* [Background: Human Activity Recognition](#background:-human-activity-recognition)   
+* [Prepare the Data Sets](#prepare-the-data-sets)   
+* [Train and Evaluate the Gradient Boosting Machine Model](#train-and-evaluate-the-gradient-boosting-machine-model)   
+* [Train and Evaluate the Random Forest Model](#train-and-evaluate-the-random-forest-model)   
+* [Predict on the Test Set](#predict-on-the-test-set)   
+* [Write the Submission Files](#write-the-submission-files)   
+
+
+
+### Background: Human Activity Recognition
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit, it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or simply because they are interested in the technology. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+
+> The goal of this project is to use data from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants that were asked to perform barbell lifts correctly and incorrectly in 5 different ways and predict the manner in which they did the exercise. This is the "classe" variable in the training set. Included below is a report describing how my prediction model was built, how I used cross validation, what I believe the out of sample error is, and why I made the choices that I did. The final prediction model was used to predict 20 different test cases submitted on Coursera. More information about the dataset is available from the website here:
+
+http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+### Prepare the Data Sets
+
+* Load the required libraries  
+* Read data and set the seed to ensure repeatability of model validation  
+* Partition the data into a training and test set  
+* Remove the predictors with zero or near zero variance and those with more than 75% missing values  
+
+```{r message = FALSE}
+
+# Load the required libraries
+lapply(c("ggplot2","caret","gbm", "randomForest"),require,character.only=T)
+
+# Ensure the results are repeatable
+set.seed(1)
+
+# Load PML_Assignment data
+train <- read.csv("pml-training.csv")
+test <- read.csv("pml-testing.csv")
+
+# Convert outcome variable, classe, to a factor
+train$classe <- as.factor(train$classe)
+outcomeName <- 'classe'
+
+splitIndex <- createDataPartition(y = train$classe, p = .75, list = FALSE, times = 1)
+trainDF <- train[ splitIndex,]
+testDF  <- train[-splitIndex,]
+
+# Remove variables with zero or near zero variance
+nzv <- nearZeroVar(trainDF, saveMetrics = TRUE)
+trainDF <- trainDF[, !nzv$nzv]
+
+# Remove variables with more than 75% values missing
+isMissing <- sapply(colnames(trainDF), function(x) 
+  if(sum(is.na(trainDF[, x])) > 0.75*nrow(trainDF))
+    {return(TRUE)}
+  else
+    {return(FALSE)})
+trainDF <- trainDF[, !isMissing]
+trainDF <- subset(trainDF, select = -c(X, cvtd_timestamp))
+
+# Store a list of all predictors for later use
+predictorNames <- names(trainDF)[names(trainDF) != outcomeName]
+print(predictorNames)
+
+# Remove the same predictors from validation set as training set
+testDF <- testDF[, !nzv$nzv]
+testDF <- testDF[, !isMissing]
+testDF <- subset(testDF, select = -c(X, cvtd_timestamp))
+
+
+```
+
+Below is a summary of the final datasets used for model building after excluding features:  
+
+Dataset    |  Total Observations  |  Number of Features
+---------- | -------------------- | --------------------
+Training   | 14718                | 57
+Validation | 4903                 | 57
+Test       | 20                   | 56
+
+
+### Train and Evaluate the Gradient Boosting Machine Model
+
+In the boosting tree model, we first use three fold cross-validation to train our model.  
+
+* Accuracy was used to select the optimal model, which consisted of the following parameters:  
+  + n.trees = 150  
+  + interaction.depth = 3  
+  + shrinkage = 0.1  
+  + n.minobsinnode = 10  
+* The optimal GBM model was 99.674% accurate, corresponding to a 0.326% OOB error rate.  
+
+```{r results = "hide"}
+
+# Prepare training scheme
+control <- trainControl(method='cv', number=3)
+
+# Train the GBM model
+modelGbm <- train(trainDF[,predictorNames], trainDF[,outcomeName], 
+                  method='gbm', 
+                  trControl=control,
+                  preProc = c("center", "scale"))
+
+```
+
+
+```{r}
+
+print(modelGbm)
+
+predictions_GBM <- predict(object=modelGbm, testDF[,predictorNames], type='raw')
+confusionGbm <- confusionMatrix(predictions_GBM, testDF$classe)
+confusionGbm
+
+GBMresults <- table(predictions_GBM, testDF$classe)
+OOBerrorGbm <- 1-(sum(diag(GBMresults))/length(predictions_GBM))
+OOBerrorGbm
+
+
+```
+
+
+### Train and Evaluate the Random Forest Model
+
+In the random forest tree model, we first use three fold cross-validation to train our model.
+
+* The optimal model consisted of the following parameters:    
+  + Number of trees = 500  
+  + Number of variables tried at each split = 31   
+* The optimal RF model was 99.92% accurate, corresponding to a 0.08% OOB error rate.  
+
+
+```{r}
+
+# RF Model
+rfFit <- train(classe ~ ., method = "rf", data = trainDF, importance = T, trControl = control)
+rfFit$finalModel
+varImp(rfFit)
+
+```
+
+
+### Predict on the Test Set
+
+The Random Forest model was used to predict on the test set.  
+
+* In addition to a higher accuracy, the out of bag error rate was also lower for the RF model.  
+* The RF model used for prediction on the test set was 100% accurate.   
+
+Note: The optimal GBM model was also 100% accurate in predicting the "Classe" variable in the test data set.
+
+```{r}
+
+# Remove the same variables from test set as training set
+test <- test[, !nzv$nzv]
+test <- test[, !isMissing]
+test <- subset(test, select = -c(X, cvtd_timestamp, problem_id))
+
+# Predictions for RF Model
+prediction_RF <- as.character(predict(rfFit, test))
+
+
+```
+
+
+### Write the Submission Files
+
+
+```{r}
+
+# Write the submission
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i], file=filename, quote=FALSE, row.names=FALSE, col.names=FALSE)
+  }
+}
+
+pml_write_files(prediction_RF)
+
+
+```
